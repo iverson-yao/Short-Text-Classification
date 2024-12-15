@@ -92,6 +92,181 @@ class TextDataset(Dataset):
         return {'text': self.tokenize(text), 'label': self.labels[idx]}
 
 
+def load_dataset(train_data_path, dev_data_path, test_data_path, txt_wordVectors_path,
+                 cpt_wordVectors_path, train_batch_size, dev_batch_size, test_batch_size):
+    """
+    加载数据集，构建词汇表和数据迭代器
+    """
+    print(22222)
+    tokenize = lambda x: x.split()
+
+    # 定义文本字段 (text)，用<pad>进行填充
+    txt_TEXT = data.Field(sequential=True, tokenize=tokenize, pad_token='<pad>',
+                          lower=True, include_lengths=True, batch_first=True)
+
+    # 定义标签字段 (label)，没有unk_token
+    LABEL = data.Field(sequential=False, batch_first=True, unk_token=None)
+
+    # 加载文本文件
+    def get_text_files(path, label=None):
+        text_files = glob.glob(os.path.join(path, '*.txt'))
+        return TextDataset(text_files, label=label)
+
+    # 加载训练集，正面评论和负面评论
+    train_pos_files = get_text_files(os.path.join(train_data_path, 'pos'), label=1)
+    train_neg_files = get_text_files(os.path.join(train_data_path, 'neg'), label=0)
+    train_data = train_pos_files + train_neg_files
+
+    # 加载测试集
+    test_pos_files = get_text_files(os.path.join(test_data_path, 'pos'), label=1)
+    test_neg_files = get_text_files(os.path.join(test_data_path, 'neg'), label=0)
+    test_data = test_pos_files + test_neg_files
+
+    # 如果有未标注的训练数据
+    unsup_data = []
+    if os.path.exists(os.path.join(train_data_path, 'unsup')):
+        unsup_files = get_text_files(os.path.join(train_data_path, 'unsup'))
+        unsup_data = unsup_files  # 未标注数据没有标签
+        print("have unsup_data")
+
+    # 构建词汇表
+    txt_TEXT.build_vocab(train_data)
+    print(3333)
+    # 构建标签词汇表
+    LABEL.build_vocab(train_data)
+
+    # 创建数据迭代器
+    train_iter = data.Iterator(train_data, batch_size=train_batch_size,
+                               train=True, sort=False, repeat=False, shuffle=True)
+    dev_iter = None  # 如果需要验证集数据，可以加上处理代码
+    test_iter = data.Iterator(test_data, batch_size=test_batch_size,
+                              train=False, sort=False, repeat=False, shuffle=False)
+
+    # 获取词汇表的大小
+    txt_vocab_size = len(txt_TEXT.vocab)
+    label_size = len(LABEL.vocab)
+
+    return txt_TEXT, txt_vocab_size, train_iter, test_iter, label_size
+
+
+def train_test_split(all_iter, ratio):
+    """
+    根据给定比例划分数据集为训练集和测试集。
+    """
+    length = len(all_iter)
+    train_data = []
+    test_data = []
+    train_end = int(length * ratio)
+
+    for ind, batch in enumerate(all_iter):
+        if ind < train_end:
+            train_data.append(batch)
+        else:
+            test_data.append(batch)
+
+    return train_data, test_data
+
+def train_dev_split(train_iter, ratio):
+    length = len(train_iter)
+    train_data = []
+    dev_data = []
+    train_start = 0
+    train_end = int(length*ratio)
+    ind = 0
+    for batch in train_iter:
+        if ind < train_end:
+            train_data.append(batch)
+        else:
+            dev_data.append(batch)
+        ind += 1
+    return train_data, dev_data
+
+
+
+def clip_gradient(model, clip_value):
+    params = list(filter(lambda p: p.grad is not None, model.parameters()))
+    for p in params:
+        p.grad.data.clamp_(-clip_value, clip_value)
+
+
+def train_model(model, train_iter, dev_iter, epoch, lr, loss_func):
+    optim = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    all_loss = 0.0
+    model.train()
+    ind = 0.0
+    for idx, batch in enumerate(train_iter):
+        txt_text = batch.text[0]
+        cpt_text = batch.concept[0]
+        # batch_size = text.size()[0]
+        target = batch.label
+
+        if torch.cuda.is_available():
+            txt_text = txt_text.cuda()
+            cpt_text = cpt_text.cuda()
+            target = target.cuda()
+
+        optim.zero_grad()
+        # pred: batch_size, output_size
+        logit = model(txt_text, cpt_text)
+
+        loss = loss_func(logit, target)
+
+        loss.backward()
+        # clip_gradient(model, 1e-1)
+        optim.step()
+
+        if idx % 10 == 0:
+            logger.info('Epoch:%d, Idx:%d, Training Loss:%.4f', epoch, idx, loss.item())
+            # dev_iter_ = copy.deepcopy(dev_iter)
+            # p, r, f1, eval_loss = eval_model(model, dev_iter, id_label)
+        all_loss += loss.item()
+        ind += 1
+
+    eval_loss, acc, p, r, f1 = 0.0, 0.0, 0.0, 0.0, 0.0
+    eval_loss, acc, p, r, f1 = eval_model(model, dev_iter, loss_func)
+    # return all_loss/ind
+    return all_loss / ind, eval_loss, acc, p, r, f1
+
+
+def eval_model(model, val_iter, loss_func):
+    eval_loss = 0.0
+    ind = 0.0
+    score = 0.0
+    pred_label = None
+    target_label = None
+    # flag = True
+    model.eval()
+    with torch.no_grad():
+        for idx, batch in enumerate(tqdm(val_iter)):
+            txt_text = batch.text[0]
+            cpt_text = batch.concept[0]
+            # batch_size = text.size()[0]
+            target = batch.label
+
+            if torch.cuda.is_available():
+                txt_text = txt_text.cuda()
+                cpt_text = cpt_text.cuda()
+                target = target.cuda()
+            logit = model(txt_text, cpt_text)
+
+            loss = loss_func(logit, target)
+            eval_loss += loss.item()
+            if ind > 0:
+                pred_label = torch.cat((pred_label, logit), 0)
+                target_label = torch.cat((target_label, target))
+            else:
+                pred_label = logit
+                target_label = target
+
+            ind += 1
+
+    acc, p, r, f1 = metrics.assess(pred_label, target_label)
+    return eval_loss / ind, acc, p, r, f1
+
+# Set up logger
+logger = logging.getLogger()
+logging.basicConfig(level=logging.INFO)
+
 
 
 def main():
