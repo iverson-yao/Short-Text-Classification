@@ -74,3 +74,43 @@ trainer = Trainer(
         'recall': precision_recall_fscore_support(pred.label_ids, pred.predictions.argmax(-1), average='binary')[1]
     }
 )
+
+# 开始训练
+trainer.train()
+
+# 保存微调后的模型
+trainer.save_model(finetuned_model_path)
+
+print(f"Model saved to {finetuned_model_path}")
+
+# 在完整测试集上进行评估
+
+# 重新加载保存的模型
+model_for_evaluation = AutoModelForSequenceClassification.from_pretrained(finetuned_model_path)
+tokenizer_for_evaluation = AutoTokenizer.from_pretrained(finetuned_model_path)
+
+# 初始化用于评估的Trainer，设置eval_strategy为'no'，因为我们在evaluate方法中明确指定评估数据集
+eval_args = TrainingArguments(
+    output_dir='./results',
+    do_eval=False,  # 不执行自动评估
+    per_device_eval_batch_size=8,
+)
+
+eval_trainer = Trainer(
+    model=model_for_evaluation,
+    args=eval_args,
+    tokenizer=tokenizer_for_evaluation,
+    compute_metrics=lambda pred: {
+        'accuracy': accuracy_score(pred.label_ids, pred.predictions.argmax(-1)),
+        'f1': precision_recall_fscore_support(pred.label_ids, pred.predictions.argmax(-1), average='binary')[2],
+        'precision': precision_recall_fscore_support(pred.label_ids, pred.predictions.argmax(-1), average='binary')[0],
+        'recall': precision_recall_fscore_support(pred.label_ids, pred.predictions.argmax(-1), average='binary')[1]
+    }
+)
+
+# 使用完整的测试集进行评估
+full_test_dataset = tokenized_datasets["test"]
+
+eval_results = eval_trainer.evaluate(full_test_dataset)
+
+print(f"Evaluation results on the full test set: {eval_results}")
