@@ -63,3 +63,22 @@ class STCK_Atten(nn.Module):
         beta = F.softmax(c.squeeze(-1), -1)  # batch_size, concept_seq_len
 
         return beta
+    def forward(self, txt_wordid, cpt_wordid):
+        # txt_wordid: batch_size, text_seq_len
+        # cpt_wordid: batch_size, concept_seq_len
+        input_txt = self.txt_word_embed(txt_wordid)  # input_: batch_size, seq_len, emb_dim
+        output, (hn, cn) = self.lstm(input_txt)  # output: batch_size, seq_len, 2*hidden_size
+        q = self.self_attention(output)  # text representation
+        input_cpt = self.cpt_word_embed(cpt_wordid)  # input_: batch_size, concept_seq_len, emb_dim
+        alpha = self.cst_attention(input_cpt, q)  # batch_size, concept_seq_len
+        beta = self.ccs_attention(input_cpt)  # batch_size, concept_seq_len
+
+        cpt_atten = F.softmax(self.gama * alpha + (1 - self.gama) * beta, -1)  # batch_size, concept_seq_len
+        p = torch.bmm(cpt_atten.unsqueeze(1), input_cpt).squeeze(1)  # batch_size, emb_dim
+
+        hidden_rep = torch.cat((q, p), -1)  # batch_size, 2*hidden_size+emb_dim
+
+        logit = self.output(hidden_rep)
+
+        return logit
+
