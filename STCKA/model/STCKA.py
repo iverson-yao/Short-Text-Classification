@@ -29,3 +29,37 @@ class STCK_Atten(nn.Module):
         self.W2 = nn.Linear(embedding_dim, db)
         self.w2 = nn.Linear(db, 1, bias=False)
         self.output = nn.Linear(2 * hidden_size + embedding_dim, output_size)
+
+
+    def self_attention(self, H):
+        # H: batch_size, seq_len, 2*hidden_size
+        hidden_size = H.size()[-1]
+        Q = H
+        K = H
+        V = H
+        # batch_size, seq_len, seq_len
+        atten_weight = F.softmax(torch.bmm(Q, K.permute(0, 2, 1)) / math.sqrt(hidden_size), -1)
+        A = torch.bmm(atten_weight, V)  # batch_size, seq_len, 2*hidden_size
+        A = A.permute(0, 2, 1)
+        # q: short text representation
+        q = F.max_pool1d(A, A.size()[2]).squeeze(-1)  # batch_size, 2*hidden_size
+
+        return q
+
+    def cst_attention(self, c, q):
+        # c: batch_size, concept_seq_len, embedding_dim
+        # q: batch_size, 2*hidden_size
+        q = q.unsqueeze(1)
+        q = q.expand(q.size(0), c.size(1), q.size(2))
+        c_q = torch.cat((c, q), -1)  # batch_size, concept_seq_len, embedding_dim+2*hidden_size
+        c_q = self.w1(F.tanh(self.W1(c_q)))  # batch_size, concept_seq_len, 1
+        alpha = F.softmax(c_q.squeeze(-1), -1)  # batch_size, concept_seq_len
+
+        return alpha
+
+    def ccs_attention(self, c):
+        # c: batch_size, concept_seq_len, embedding_dim
+        c = self.w2(F.tanh(self.W2(c)))  # batch_size, concept_seq_len, 1
+        beta = F.softmax(c.squeeze(-1), -1)  # batch_size, concept_seq_len
+
+        return beta
